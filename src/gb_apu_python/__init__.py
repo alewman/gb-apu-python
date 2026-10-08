@@ -22,11 +22,16 @@ READ_MASKS = (
 LENGTH_REGISTERS = (0x11, 0x16, 0x1B, 0x20)
 
 
+#: NRx4 address -> channel index (the trigger bit is bit 7)
+TRIGGERS = {0xFF14: 0, 0xFF19: 1, 0xFF1E: 2, 0xFF23: 3}
+
+
 class APU:
     def __init__(self) -> None:
         self.registers = bytearray(0x17)  # $FF10-$FF26
         self.wave_ram = bytearray(16)
         self.power = False
+        self.channel_on = [False] * 4  # NR52 bits 0-3; the channels themselves are milestone 4
 
     def read(self, address: int) -> int:
         if address >= 0xFF30:
@@ -35,7 +40,8 @@ class APU:
             return 0xFF
         index = address - 0xFF10
         if address == 0xFF26:
-            return 0x70 | (0x80 if self.power else 0)
+            status = sum(1 << i for i, on in enumerate(self.channel_on) if on)
+            return 0x70 | (0x80 if self.power else 0) | status
         return self.registers[index] | READ_MASKS[index]
 
     def write(self, address: int, value: int) -> None:
@@ -48,7 +54,16 @@ class APU:
             power = bool(value & 0x80)
             if self.power and not power:
                 self.registers = bytearray(0x17)
+                self.channel_on = [False] * 4
             self.power = power
             return
         if self.power or address in LENGTH_REGISTERS:
             self.registers[address - 0xFF10] = value
+        if self.power and address in TRIGGERS and value & 0x80 and self._dac_on(TRIGGERS[address]):
+            self.channel_on[TRIGGERS[address]] = True  # a trigger turns the channel on
+
+    def _dac_on(self, channel: int) -> bool:
+        """A channel's DAC is on when NRx2's top five bits (NR30 bit 7 for CH3) are not zero."""
+        if channel == 2:
+            return bool(self.registers[0x0A] & 0x80)
+        return bool(self.registers[(0x02, 0x07, 0, 0x11)[channel]] & 0xF8)
