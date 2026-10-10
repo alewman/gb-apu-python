@@ -511,6 +511,12 @@ class APU:
 
     # ----- boot hand-off ------------------------------------------------------------------
 
+    def pcm(self, pair: int) -> int:
+        """PCM12/PCM34 ($FF76/$FF77, CGB): the channels' current 4-bit digital outputs, channel
+        1 or 3 in the low nibble and 2 or 4 in the high one (Pan Docs Audio_Registers.md)."""
+        outputs = self.digital() if self.power else (0, 0, 0, 0)
+        return outputs[2 * pair] | (outputs[2 * pair + 1] << 4)
+
     def skip_boot(self) -> None:
         """The state the DMG boot ROM leaves: powered, the registers it writes, channel 1 on."""
         self.power = True
