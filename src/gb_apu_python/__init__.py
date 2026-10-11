@@ -152,7 +152,11 @@ class Noise:
 
 
 class APU:
-    def __init__(self, sample_rate: int = 44100) -> None:
+    def __init__(self, sample_rate: int = 44100, cgb: bool = False) -> None:
+        #: CGB hardware: powering off clears the length counters and keeps them read-only; wave RAM
+        #: is reachable at any time while CH3 plays and a trigger corrupts nothing (blargg
+        #: cgb_sound 08-11, Pan Docs Audio_details.md)
+        self.cgb = cgb
         self.registers = bytearray(0x17)  # $FF10-$FF26 as written
         self.wave_ram = bytearray(WAVE_POWER_ON)
         self.power = False
@@ -209,7 +213,7 @@ class APU:
             return
         if not self.power:
             # DMG: the length counters stay writable (their duty bits do not)
-            if address in (0xFF11, 0xFF16, 0xFF1B, 0xFF20):
+            if not self.cgb and address in (0xFF11, 0xFF16, 0xFF1B, 0xFF20):
                 self._write_length(address, value)
             return
         self._write_register(address, value)
@@ -219,6 +223,8 @@ class APU:
             self.registers = bytearray(0x17)
             for channel in (self.ch1, self.ch2, self.ch3, self.ch4):
                 channel.reset()
+                if self.cgb:
+                    channel.length = 0
             self.step = 0
         elif on and not self.power:
             self.step = 1 if self.div_bit12 else 0  # DIV-APU's bit is already high: step 0 is spent
@@ -359,19 +365,21 @@ class APU:
         ch3 = self.ch3
         if not (ch3.enabled and self.power):
             return self.wave_ram[offset]
-        return self.wave_ram[ch3.index >> 1] if self._wave_reachable() else 0xFF
+        if self.cgb or self._wave_reachable():
+            return self.wave_ram[ch3.index >> 1]
+        return 0xFF
 
     def _write_wave(self, offset: int, value: int) -> None:
         ch3 = self.ch3
         if not (ch3.enabled and self.power):
             self.wave_ram[offset] = value
-        elif self._wave_reachable():
+        elif self.cgb or self._wave_reachable():
             self.wave_ram[ch3.index >> 1] = value
 
     def _trigger_wave_corruption(self) -> None:
         """DMG: triggering CH3 while it reads wave RAM rewrites the first bytes (Pan Docs)."""
         ch3 = self.ch3
-        if not (ch3.enabled and CORRUPT_LO <= self.t - ch3.last_read < CORRUPT_HI):
+        if self.cgb or not (ch3.enabled and CORRUPT_LO <= self.t - ch3.last_read < CORRUPT_HI):
             return
         position = ((ch3.index + 1) & 31) >> 1
         if position < 4:
