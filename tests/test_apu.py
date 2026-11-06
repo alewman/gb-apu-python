@@ -157,11 +157,14 @@ def test_noise_lfsr_periods(model, nr43, period):
     apu.write(NR43, nr43)  # the fastest clock
     apu.write(NR44, 0x80)
     states, last = [], apu.ch4.lfsr
-    while len(states) < 2 * period + 200:
+    for _ in range(64 * (2 * period + 200)):  # a stuck LFSR fails below instead of hanging
         apu.tick(2)
         if apu.ch4.lfsr != last:
             last = apu.ch4.lfsr
             states.append(last & 0x7F)
+            if len(states) == 2 * period + 200:
+                break
+    assert len(states) == 2 * period + 200, "the LFSR stopped stepping"
     tail = states[200:]
     assert all(tail[i] == tail[i + period] for i in range(period))
     if period == 127:

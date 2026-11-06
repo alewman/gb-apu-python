@@ -25,7 +25,9 @@ The hardware judges are test ROMs, run on gameboy-python (the APU needs a CPU to
 - **Seeded faults** (`scripts/mutation.py`): 20 mutants, one rule broken each (duty, noise divisors
   and taps, wave shift, nibble order and period, sequencer steps for length, sweep and envelope,
   NR52, length widths, the DMG/CGB power-off rules, the spent first step, wave start-up and
-  corruption timing, DAC polarity, panning, PCM nibbles); each must fail the tests.
+  corruption timing, DAC polarity, panning, PCM nibbles); each must fail the tests. 20 of 20 are
+  caught (2026-11-06). The 7-bit noise width is heard by no judge ROM, so it has its own rule test
+  (`test_noise_lfsr_periods`): without it that mutant went unseen.
 
 ## The extraction
 
