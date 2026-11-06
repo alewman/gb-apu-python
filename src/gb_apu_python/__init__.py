@@ -1,18 +1,54 @@
-"""The APU behind a pin-shaped boundary (docs/handoff-brief.md "Decisions").
+"""The Game Boy APU (the four channels, the frame sequencer and the mixer) behind a pin-shaped
+boundary that any host drives (docs/contract.md):
 
-In: register reads and writes ($FF10-$FF3F), ``tick(t)`` for the clock (the board calls it every
-M-cycle with t = 4) and ``frame_tick()`` for every falling edge of the system counter's bit 12
-(DIV-APU, 512 Hz). Out: ``take_samples()`` (host-rate stereo, labelled analogue fit below) and
-the per-channel digital outputs. This package imports nothing from the rest of the board
-(tests/test_import_boundaries.py).
+- the clock: ``tick(t)`` advances ``t`` T-cycles of the APU's 4,194,304 Hz clock (the Game Boy
+  calls it every M-cycle), ``run(t)`` catches up any number of them in those steps;
+- the frame sequencer: ``frame_tick()`` at each step (512 Hz) and ``secondary_tick()`` half a period
+  later; the Game Boy takes both edges from its system counter's bit 12, a host without DIV clocks
+  them itself. ``frame_clock_high`` is that clock's level, read when NR52 powers the APU on;
+- registers by their Game Boy address: ``read``/``write`` of NR10-NR52 ($FF10-$FF26) and wave RAM
+  ($FF30-$FF3F), the names below; a host maps its own addresses onto these;
+- out: ``digital()`` (each channel's 0-15 DAC input), ``dacs()``, ``nr50``/``nr51`` (panning and
+  volume) for a host that mixes them itself, or ``take_samples()`` (this core's labelled-fit mix);
+  ``capture_state()`` is an immutable snapshot.
 
-The model is the DMG-CPU one (docs/start-here.md): Pan Docs ``Audio_details.md`` and the
-Blargg ``dmg_sound`` behaviours it names. Where a constant is fitted to a test it says so.
+A ``Model`` row holds a revision's differences: DMG and CGB here. The behaviour follows Pan Docs
+``Audio_details.md``, blargg ``dmg_sound``/``cgb_sound`` and SameSuite's APU ROMs (SameBoy's model
+of the CGB); where a constant is fitted to a test it says so. Extracted from gameboy-python, which
+pins it.
 """
 
 from __future__ import annotations
 
 from array import array
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class Model:
+    """A hardware revision's APU: ``cgb`` selects the CGB-family rules (powering off clears the
+    length counters and keeps them read-only; wave RAM is reachable at any time while CH3 plays
+    and a trigger corrupts nothing; NRx2 writes while playing take the CGB "zombie" path; the CGB
+    sweep and noise counters; blargg cgb_sound 08-11, SameSuite)."""
+
+    name: str
+    cgb: bool
+
+
+DMG = Model("dmg", cgb=False)  # DMG-CPU (the revisions gameboy-python runs)
+CGB = Model("cgb", cgb=True)  # CPU CGB E (gameboy-python's CGB)
+# AGB: the Game Boy Advance's Game Boy channels (two wave banks and the 64-sample mode, the forced
+# 75 % wave volume, the frame sequencer from the system clock). Not modelled yet: the row and its
+# rules come with gba-python's sound work.
+MODELS = {"dmg": DMG, "cgb": CGB}
+
+#: register addresses (the Game Boy's; a host maps its own onto them)
+NR10, NR11, NR12, NR13, NR14 = 0xFF10, 0xFF11, 0xFF12, 0xFF13, 0xFF14
+NR21, NR22, NR23, NR24 = 0xFF16, 0xFF17, 0xFF18, 0xFF19
+NR30, NR31, NR32, NR33, NR34 = 0xFF1A, 0xFF1B, 0xFF1C, 0xFF1D, 0xFF1E
+NR41, NR42, NR43, NR44 = 0xFF20, 0xFF21, 0xFF22, 0xFF23
+NR50, NR51, NR52 = 0xFF24, 0xFF25, 0xFF26
+WAVE_RAM = 0xFF30  # to $FF3F
 
 #: bits that always read 1 per register $FF10-$FF26 (Pan Docs Audio_Registers.md, DMG)
 READ_MASKS = (
@@ -69,7 +105,8 @@ class Envelope:
             self.locked |= self.should_lock
 
     def count(self) -> None:
-        """The event that is the eighth since the last: the countdown runs unless a tick is armed."""
+        """The event that is the eighth since the last: the countdown runs unless a tick is
+        armed."""
         if not self.clock:
             self.countdown = (self.countdown - 1) & 7
 
@@ -82,7 +119,8 @@ class Envelope:
         return True
 
     def secondary(self, nrx2: int) -> None:
-        """The event half a DIV-APU period after the tick: reload the countdown and arm the clock."""
+        """The event half a DIV-APU period after the tick: reload the countdown and arm the
+        clock."""
         if self.countdown == 0:
             self.countdown = nrx2 & 7
             self.set_clock(self.countdown != 0, bool(nrx2 & 8), self.volume)
@@ -118,7 +156,8 @@ class Envelope:
 
 class Pulse:
     """A pulse channel clocked in 2 MHz ticks, the unit SameSuite's PCM12 reads resolve (SameBoy's
-    model of the CGB: a countdown per sample, a start-up ``delay`` and a suppressed first sample)."""
+    model of the CGB: a countdown per sample, a start-up ``delay`` and a suppressed first
+    sample)."""
 
     def __init__(self, sweep: bool) -> None:
         self.has_sweep = sweep
@@ -186,12 +225,29 @@ class Noise:
         return self.env.volume if self.enabled and self.lfsr & 1 else 0
 
 
+@dataclass(frozen=True, slots=True)
+class APUState:
+    """An immutable snapshot, for comparison and reporting (restoring is not offered)."""
+
+    model: str
+    t: int  # T-cycles since construction
+    power: bool
+    registers: bytes  # $FF10-$FF26 as written
+    wave_ram: bytes
+    divider: int  # frame sequencer steps counted (mod 256)
+    enabled: tuple[bool, bool, bool, bool]
+    lengths: tuple[int, int, int, int]
+    volumes: tuple[int, int, int]  # CH1, CH2, CH4 envelopes
+    digital: tuple[int, int, int, int]
+
+    def as_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__slots__}  # type: ignore[attr-defined]
+
+
 class APU:
-    def __init__(self, sample_rate: int = 44100, cgb: bool = False) -> None:
-        #: CGB hardware: powering off clears the length counters and keeps them read-only; wave RAM
-        #: is reachable at any time while CH3 plays and a trigger corrupts nothing (blargg
-        #: cgb_sound 08-11, Pan Docs Audio_details.md)
-        self.cgb = cgb
+    def __init__(self, sample_rate: int = 44100, model: Model = DMG) -> None:
+        self.model = model
+        self.cgb = model.cgb
         self.registers = bytearray(0x17)  # $FF10-$FF26 as written
         self.wave_ram = bytearray(WAVE_POWER_ON)
         self.power = False
@@ -200,7 +256,9 @@ class APU:
         self.ch3 = Wave()
         self.ch4 = Noise()
         self.divider = 0  # DIV-APU events counted (mod 256); its low bits pick what each one clocks
-        self.skip_event = 0  # 1: the first event after a power-on with DIV's bit high is dropped, 2: and the next does not count
+        # 1: the first event after a power-on with the clock high is dropped, 2: and the next does
+        # not count
+        self.skip_event = 0
         # CGB sweep: a 3-bit period counter stepped by the DIV-APU events, and the calculation it
         # starts, which finishes a few 1 MHz ticks later (SameSuite channel_1_sweep*)
         self.sweep_countdown = 0
@@ -279,13 +337,13 @@ class APU:
             self.calc_instant = self.sweep_unshifted = False
             self.sweep_addend = self.sweep_shadow = self.sweep_completed = self.restart_hold = 0
         elif on and not self.power:
-            if self.div_bit12:  # DIV-APU's bit is already high: its first event is spent
+            if self.frame_clock_high:  # the sequencer clock is high already: a step is spent
                 self.divider = 1
                 self.skip_event = 1
             self.lf_div = 1
         self.power = on
 
-    div_bit12 = False  # set by the board: DIV's bit 12 as the write happens
+    frame_clock_high = False  # set by the host: the frame sequencer clock's level (DIV bit 12)
 
     def _write_length(self, address: int, value: int) -> None:
         if address == 0xFF11:
@@ -307,9 +365,7 @@ class APU:
         elif address == 0xFF10:
             if ch1.sweep_negated and old & 8 and not value & 8:
                 ch1.enabled = False  # sweep direction cleared after a negated calculation
-        elif address in (0xFF11, 0xFF16):
-            self._write_length(address, value)
-        elif address in (0xFF1B, 0xFF20):
+        elif address in (0xFF11, 0xFF16, 0xFF1B, 0xFF20):
             self._write_length(address, value)
         elif address in (0xFF12, 0xFF17, 0xFF21):
             channel = {0xFF12: ch1, 0xFF17: ch2, 0xFF21: ch4}[address]
@@ -410,7 +466,9 @@ class APU:
         ch1 = self.ch1
         if nr10 & 0x70 and self.sweep_countdown == 7:
             if nr10 & 7:
-                ch1.frequency = (self.sweep_addend + self.sweep_shadow + (1 if nr10 & 8 else 0)) & 0x7FF
+                ch1.frequency = (
+                    self.sweep_addend + self.sweep_shadow + (1 if nr10 & 8 else 0)
+                ) & 0x7FF
             if self.restart_hold == 0:
                 self.sweep_addend = ch1.frequency >> (nr10 & 7)
             self.calc_countdown = nr10 & 7  # recalculation and the overflow check come later
@@ -445,7 +503,10 @@ class APU:
                 self.calc_countdown -= 1
                 if not self.calc_countdown:
                     self._sweep_done()
-        if self.sweep_shadow + self.sweep_completed + (1 if old & 8 else 0) > 0x7FF and not value & 8:
+        if (
+            self.sweep_shadow + self.sweep_completed + (1 if old & 8 else 0) > 0x7FF
+            and not value & 8
+        ):
             self.ch1.enabled = False
         self._sweep_calculation()
 
@@ -511,7 +572,11 @@ class APU:
         channel.did_tick = False
         unsuppress = False
         if not was_active:
-            if self.cgb and not value & 4 and not self._half(channel.countdown - channel.delay) & 0x400:
+            if (
+                self.cgb
+                and not value & 4
+                and not self._half(channel.countdown - channel.delay) & 0x400
+            ):
                 channel.index = (channel.index + 1) & 7  # CGB D/E: a phantom step
                 unsuppress = True
             channel.delay = 6 - self.lf_div
@@ -525,7 +590,11 @@ class APU:
                 ):
                     channel.index = (channel.index + 1) & 7
                     channel.suppressed = False
-                elif channel.frequency == 0x7FF and self._old_frequency != 0x7FF and channel.suppressed:
+                elif (
+                    channel.frequency == 0x7FF
+                    and self._old_frequency != 0x7FF
+                    and channel.suppressed
+                ):
                     extra = 2
             channel.delay = 4 - self.lf_div + extra
         channel.countdown = ((channel.frequency ^ 0x7FF) * 2 + channel.delay) & 0xFFFF
@@ -761,7 +830,12 @@ class APU:
             env = channel.env
             if divider & 7 == 7:
                 env.count()
-            if env.clock and env.tick(self.registers[nrx2]) and channel.enabled and channel is not self.ch4:
+            if (
+                env.clock
+                and env.tick(self.registers[nrx2])
+                and channel.enabled
+                and channel is not self.ch4
+            ):
                 self._refresh(channel)
         if divider & 1:
             self._clock_lengths()
@@ -790,8 +864,17 @@ class APU:
                 if channel.length == 0:
                     channel.enabled = False
 
+    def run(self, t: int) -> None:
+        """Catch up ``t`` T-cycles in the Game Boy's steps: 4 at a time (one M-cycle), the rest
+        last. Sequencer edges and register accesses go between calls."""
+        while t >= 4:
+            self.tick(4)
+            t -= 4
+        if t:
+            self.tick(t)
+
     def tick(self, t: int = 4) -> None:
-        """Advance ``t`` T-cycles (the board passes 4: one M-cycle)."""
+        """Advance ``t`` T-cycles (the Game Boy passes 4, one M-cycle; 2 in CGB double speed)."""
         base = self.t
         self.t = base + t
         if self.power:
@@ -855,8 +938,36 @@ class APU:
         )
 
     def digital(self) -> tuple[int, int, int, int]:
-        """The four channels' digital outputs (0-15)."""
+        """The four channels' digital outputs (0-15), the DACs' inputs."""
         return (self.ch1.output(), self.ch2.output(), self.wave_output(), self.ch4.output())
+
+    def dacs(self) -> tuple[bool, bool, bool, bool]:
+        """Which channels' DACs are on (an off DAC outputs nothing at all)."""
+        return (self.dac_on(0), self.dac_on(1), self.dac_on(2), self.dac_on(3))
+
+    @property
+    def nr50(self) -> int:
+        """Master volume (bits 6-4 left, 2-0 right) and the VIN bits, as written."""
+        return self.registers[0x14]
+
+    @property
+    def nr51(self) -> int:
+        """Panning: bit 4 + n sends channel n + 1 left, bit n sends it right."""
+        return self.registers[0x15]
+
+    def capture_state(self) -> APUState:
+        return APUState(
+            model=self.model.name,
+            t=self.t,
+            power=self.power,
+            registers=bytes(self.registers),
+            wave_ram=bytes(self.wave_ram),
+            divider=self.divider,
+            enabled=(self.ch1.enabled, self.ch2.enabled, self.ch3.enabled, self.ch4.enabled),
+            lengths=(self.ch1.length, self.ch2.length, self.ch3.length, self.ch4.length),
+            volumes=(self.ch1.env.volume, self.ch2.env.volume, self.ch4.env.volume),
+            digital=self.digital(),
+        )
 
     def _mix(self) -> tuple[float, float]:
         """Analogue left and right, -1..1 before the volume: DAC maps digital 0 to +1 and 15 to
@@ -927,3 +1038,35 @@ class APU:
         self.ch1.countdown = 1
         self.ch1.env.volume = 0
         self.ch1.length = 64
+
+
+__all__ = [
+    "APU",
+    "CGB",
+    "DMG",
+    "MODELS",
+    "NR10",
+    "NR11",
+    "NR12",
+    "NR13",
+    "NR14",
+    "NR21",
+    "NR22",
+    "NR23",
+    "NR24",
+    "NR30",
+    "NR31",
+    "NR32",
+    "NR33",
+    "NR34",
+    "NR41",
+    "NR42",
+    "NR43",
+    "NR44",
+    "NR50",
+    "NR51",
+    "NR52",
+    "WAVE_RAM",
+    "APUState",
+    "Model",
+]
