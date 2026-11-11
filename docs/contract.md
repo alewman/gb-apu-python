@@ -56,8 +56,10 @@ reading $FF while playing, the NR43 glitch variants, the mixer's bias), which is
 ## The clock
 
 - `tick(t)`: advance `t` T-cycles of the APU's 4,194,304 Hz clock. The Game Boy calls it once
-  per M-cycle with `t = 4` (2 in CGB double speed).
-- `run(t)`: catch up any number of T-cycles in those 4-T steps (the remainder last). A host with
+  per M-cycle with `t = 4` (2 in CGB double speed). `t` is even: the channels count 2 MHz
+  ticks, and an odd T would be lost.
+- `run(t)`: catch up any number of T-cycles in those 4-T steps (the remainder last). An odd T
+  is held and joins the next call, so any `t` is safe. A host with
   another master clock converts to these T-cycles and calls `run`; sequencer edges and register
   accesses go between calls, at the T they belong to.
 

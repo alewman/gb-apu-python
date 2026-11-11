@@ -2,7 +2,8 @@
 boundary that any host drives (docs/contract.md):
 
 - the clock: ``tick(t)`` advances ``t`` T-cycles of the APU's 4,194,304 Hz clock (the Game Boy
-  calls it every M-cycle), ``run(t)`` catches up any number of them in those steps;
+  calls it every M-cycle; ``t`` is even), ``run(t)`` catches up any number of them in those
+  steps;
 - the frame sequencer: ``frame_tick()`` at each step (512 Hz) and ``secondary_tick()`` half a period
   later; the Game Boy takes both edges from its system counter's bit 12, a host without DIV clocks
   them itself. ``frame_clock_high`` is that clock's level, read when NR52 powers the APU on;
@@ -287,6 +288,7 @@ class APU:
         self.restart_hold = 0
         self.lf_div = 1  # the 2 MHz tick's phase against the 1 MHz the pulse channels start on
         self.t = 0  # T since reset
+        self._held_t = 0  # an odd T run() has not passed on yet
         # output
         self.sample_rate = sample_rate
         self.capture = False
@@ -894,7 +896,12 @@ class APU:
 
     def run(self, t: int) -> None:
         """Catch up ``t`` T-cycles in the Game Boy's steps: 4 at a time (one M-cycle), the rest
-        last. Sequencer edges and register accesses go between calls."""
+        last. Sequencer edges and register accesses go between calls. The channels count 2 MHz
+        ticks, two T each: an odd T is held and joins the next call, so a host whose clock is
+        not the Game Boy's loses no time."""
+        t += self._held_t
+        self._held_t = t & 1
+        t -= self._held_t
         while t >= 4:
             self.tick(4)
             t -= 4

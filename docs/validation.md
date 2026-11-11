@@ -25,12 +25,12 @@ The hardware judges are test ROMs, run on gameboy-python (the APU needs a CPU to
 - **The AGB row** has no hardware judge (docs/contract.md "The AGB row"): its rules are GBATEK's,
   each held by a seam test and a seeded fault. gba-python compares its whole sound output with
   NanoBoyAdvance's on commercial music, which hears the wave banks but not the shift register.
-- **Seeded faults** (`scripts/mutation.py`): 29 mutants, one rule broken each (duty, noise divisors
+- **Seeded faults** (`scripts/mutation.py`): 30 mutants, one rule broken each (duty, noise divisors
   and taps, wave shift, nibble order and period, sequencer steps for length, sweep and envelope,
   NR52, length widths, the DMG/CGB power-off rules, the spent first step, wave start-up and
   corruption timing, DAC polarity, panning, PCM nibbles; for the AGB the bank the CPU reaches, the
-  bank that plays, the 64-digit ring, the shift register, the force bit, the readable bits); each
-  must fail the tests. 29 of 29 are caught (2026-11-11). The 7-bit noise width is heard by no judge ROM, so it has its own rule test
+  bank that plays, the 64-digit ring, the shift register, the force bit, the readable bits; the odd T `run` holds); each must fail
+  the tests. 30 of 30 are caught (2026-11-11). The 7-bit noise width is heard by no judge ROM, so it has its own rule test
   (`test_noise_lfsr_periods`): without it that mutant went unseen.
 
 ## The extraction

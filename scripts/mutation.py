@@ -51,6 +51,7 @@ MUTANTS = [
     ("AGB: force gives 50 %", "            return 3\n", "            return 2\n"),
     ("AGB: NR30's bank bits unreadable", "READ_MASKS_AGB = (*READ_MASKS[:0x0A], 0x1F, 0xFF, 0x1F,", "READ_MASKS_AGB = (*READ_MASKS[:0x0A], 0x7F, 0xFF, 0x1F,"),
     ("AGB: wave digits swapped on write", "            self.wave_digits[at] = value >> 4\n            self.wave_digits[at + 1] = value & 0xF\n", "            self.wave_digits[at + 1] = value >> 4\n            self.wave_digits[at] = value & 0xF\n"),
+    ("run() drops an odd T", "        self._held_t = t & 1\n", "        self._held_t = 0\n"),
     ("PCM nibbles swapped", "return outputs[2 * pair] | (outputs[2 * pair + 1] << 4)", "return (outputs[2 * pair] << 4) | outputs[2 * pair + 1]"),
 ]  # fmt: skip
 

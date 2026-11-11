@@ -280,3 +280,15 @@ def test_volumes_are_the_envelopes():
     apu.write(NR12, 0xA0)
     apu.write(NR14, 0x80)
     assert apu.volumes() == (10, 0, 0)
+
+
+def test_run_loses_no_time_whatever_the_step():
+    """A host on another clock catches up by odd amounts: the same T must give the same wave."""
+    whole, pieces = APU(model=AGB), APU(model=AGB)
+    for apu in (whole, pieces):
+        square(apu)
+    whole.run(3000)
+    for step in (1, 3, 5, 7, 9) * 120:  # 3,000 T in odd steps
+        pieces.run(step)
+    assert pieces.ch1.index == whole.ch1.index
+    assert pieces.ch1.countdown == whole.ch1.countdown
