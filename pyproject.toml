@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gb-apu-python"
 version = "0.1.0.dev0"
-description = "Readable, pure-Python Game Boy APU core (DMG and CGB), extracted from gameboy-python"
+description = "Readable, pure-Python Game Boy APU core (DMG, CGB and the GBA's Game Boy channels), extracted from gameboy-python"
 readme = "README.md"
 # The floor is the newest Python PyPy supports (3.11 as of PyPy 7.3.x); raise it when PyPy does.
 requires-python = ">=3.11"

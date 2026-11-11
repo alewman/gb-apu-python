@@ -16,17 +16,42 @@ differences; `MODELS` maps names to rows.
 |---|---|---|---|
 | `DMG` | False | DMG-CPU (the revisions gameboy-python runs) | blargg `dmg_sound` 12/12 |
 | `CGB` | True | CPU CGB E (gameboy-python's CGB) | blargg `cgb_sound` 12/12, SameSuite APU 63/63 |
-| AGB | | Game Boy Advance | not modelled yet (see below) |
+| `AGB` | True | Game Boy Advance, in GBA mode (gba-python) | no hardware judge: see "The AGB row" |
 
 `cgb` selects the CGB-family rules: powering off clears the length counters and keeps them
 read-only; wave RAM is reachable at any time while CH3 plays and a trigger corrupts nothing; NRx2
 writes while a channel plays take the CGB "zombie" path; the CGB sweep and noise counters
 (SameBoy's model, which SameSuite measures).
 
-A new row (the AGB) adds a `Model` field per difference, defaulting to the current behaviour so
-DMG and CGB stay as they are, and the rules behind it: for the AGB, the two wave banks and the
-64-sample mode, the forced 75 % wave volume, and its own sequencer timing (the host already owns
-the sequencer clock, below).
+A new row adds a `Model` field per difference, defaulting to the current behaviour so the other
+rows stay as they are, and the rules behind it.
+
+### The AGB row
+
+`AGB` is the CGB-family rules plus one field, `wave_banks` (GBATEK "GBA Sound Channel 3"):
+
+- Wave RAM is two banks of 32 digits. NR30 bit 6 selects the bank that plays and bit 5 chains
+  both into 64 digits, starting with the selected one. Both bits read back.
+- `read`/`write` of `WAVE_RAM` always reach the bank that is **not** selected, playing or not.
+- Wave RAM is a shift register, not a memory with a pointer: each step the digit at the front of
+  the playing ring is played and re-enters at the back, so the data moves. A host sees it move
+  when it switches banks after a partial play, or reads the other bank in 64-digit mode. A
+  trigger does not rewind it; from freshly written data the first digit played is the first
+  written (the Game Boy's first is the second).
+- NR32 bit 7 forces the volume to 75 % and reads back. `digital()` rounds that down
+  (`digit * 3 >> 2`); `wave_digit()` and `wave_quarters()` give a mixing host the exact parts.
+- `volumes()` gives the three envelope volumes, for a host that mixes each channel around zero
+  as the AGB's digital mixer does (no DACs).
+- The frame sequencer is the host's, as on every row: gba-python clocks it from its system
+  clock.
+
+What decides each rule: GBATEK for the registers and the shift register; mGBA
+(`src/gb/audio.c`, `GB_AUDIO_GBA`) models the shift register too, NanoBoyAdvance a pointer. In
+64-digit mode with bank 1 selected the three differ (GBATEK: start with the selected bank; mGBA:
+always bank 0; NanoBoyAdvance: forces the bank bit to 0 on a trigger): GBATEK is followed. There
+is no hardware test ROM for any of it, so these are documented rules with seeded faults, not
+judged ones. Not modelled: what SameBoy records for an AGB running Game Boy software (wave RAM
+reading $FF while playing, the NR43 glitch variants, the mixer's bias), which is another mode.
 
 ## The clock
 
@@ -58,6 +83,8 @@ PCM12/PCM34 ($FF76/$FF77).
 - `dacs()`: which DACs are on (an off DAC contributes nothing at all).
 - `nr50`, `nr51`: master volume and panning as written.
 - `channel_on`: the four channel-on flags (NR52's low bits).
+- `volumes()`, `wave_digit()`, `wave_quarters()`: the envelope volumes and the wave channel's
+  digit and volume apart ("The AGB row").
 - `take_samples()`: with `capture = True`, interleaved signed 16-bit stereo at `sample_rate`
   since the last call. The mix is this core's labelled fit (DACs, panning, volume, a high-pass);
   a host with its own mixer (the GBA's FIFOs and SOUNDBIAS) takes `digital()`, `dacs()`, `nr50`

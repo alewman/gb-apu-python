@@ -1,12 +1,13 @@
 # gb-apu-python
 
 A readable, pure-Python Game Boy APU: the two pulse channels, the wave channel, the noise channel,
-the frame sequencer and a mixer, for the DMG and the CGB. It runs on CPython and PyPy (Python 3.11
+the frame sequencer and a mixer, for the DMG, the CGB and the Game Boy Advance's four Game Boy
+channels (the AGB row: two wave banks in a shift register, the forced 75 % volume). It runs on CPython and PyPy (Python 3.11
 or newer) and imports nothing.
 
 It was extracted, with its history, from [gameboy-python](../gameboy-python), which pins it by git
 revision, when a second board (gba-python, whose Game Boy channels are this APU) needed it. The
-behaviour is the board's, unchanged: blargg `dmg_sound` 12/12 (DMG) and `cgb_sound` 12/12 (CGB),
+DMG and CGB behaviour is the board's, unchanged: blargg `dmg_sound` 12/12 (DMG) and `cgb_sound` 12/12 (CGB),
 SameSuite's APU ROMs 63/63 (those that apply to a CGB E), measured on the board. This repository
 replays the board's calls into the APU while it ran those ROMs (`tests/streams/`) and checks that
 every read, every step's outputs and the samples come out the same.

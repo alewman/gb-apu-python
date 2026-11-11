@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from gb_apu_python import (
+    AGB,
     APU,
     CGB,
     DMG,
@@ -15,6 +16,10 @@ from gb_apu_python import (
     NR12,
     NR13,
     NR14,
+    NR30,
+    NR32,
+    NR33,
+    NR34,
     NR42,
     NR43,
     NR44,
@@ -67,7 +72,7 @@ def test_cgb_power_off_clears_the_length_counters():
 
 
 def test_the_model_rows():
-    assert MODELS == {"dmg": DMG, "cgb": CGB}
+    assert MODELS == {"dmg": DMG, "cgb": CGB, "agb": AGB}
     assert not DMG.cgb and CGB.cgb
     assert APU().model is DMG
 
@@ -169,3 +174,109 @@ def test_noise_lfsr_periods(model, nr43, period):
     assert all(tail[i] == tail[i + period] for i in range(period))
     if period == 127:
         assert any(tail[i] != tail[i + 63] for i in range(period))
+
+
+# ----- the AGB row: wave RAM as two banks in a shift register ---------------------------------
+
+BANK_A = bytes(range(0x01, 0x11))  # digits 0,1,0,2,...: every byte differs
+BANK_B = bytes(range(0xF0, 0xE0, -1))
+
+
+def agb_wave(nr30: int, nr32: int = 0x20) -> APU:
+    """An AGB APU with BANK_A in bank 0 and BANK_B in bank 1, then ``nr30`` and a trigger at the
+    fastest rate (one digit per 2 T)."""
+    apu = APU(model=AGB)
+    apu.write(NR52, 0x80)
+    apu.write(NR30, 0x40)  # bank 1 selected: the CPU reaches bank 0
+    for i, value in enumerate(BANK_A):
+        apu.write(WAVE_RAM + i, value)
+    apu.write(NR30, 0x00)
+    for i, value in enumerate(BANK_B):
+        apu.write(WAVE_RAM + i, value)
+    apu.write(NR30, nr30)
+    apu.write(NR32, nr32)
+    apu.write(NR33, 0xFF)
+    apu.write(NR34, 0x87)
+    return apu
+
+
+def played(apu: APU, count: int) -> list[int]:
+    """The next ``count`` digits the wave channel plays."""
+    digits = []
+    apu.tick(8)  # the start-up delay and one period: the first digit
+    for _ in range(count):
+        digits.append(apu.wave_digit())
+        apu.tick(2)
+    return digits
+
+
+def digits_of(data: bytes) -> list[int]:
+    return [digit for byte in data for digit in (byte >> 4, byte & 0xF)]
+
+
+def test_agb_is_a_cgb_family_row_with_wave_banks():
+    assert MODELS["agb"] is AGB
+    assert AGB.cgb and AGB.wave_banks and not CGB.wave_banks and not DMG.wave_banks
+
+
+def test_agb_cpu_reaches_the_bank_that_is_not_selected():
+    apu = agb_wave(0x00)  # bank 0 selected
+    apu.write(NR30, 0x40)
+    assert bytes(apu.read(WAVE_RAM + i) for i in range(16)) == BANK_A
+    apu = agb_wave(0x40)
+    apu.write(NR30, 0x00)
+    assert bytes(apu.read(WAVE_RAM + i) for i in range(16)) == BANK_B
+
+
+def test_agb_plays_the_selected_bank_from_its_first_digit():
+    assert played(agb_wave(0x80), 32) == digits_of(BANK_A)
+    assert played(agb_wave(0xC0), 32) == digits_of(BANK_B)
+    assert played(agb_wave(0x80), 64) == digits_of(BANK_A) * 2  # one bank repeats
+
+
+def test_agb_64_digit_mode_starts_with_the_selected_bank_then_the_other():
+    assert played(agb_wave(0xA0), 64) == digits_of(BANK_A + BANK_B)
+    assert played(agb_wave(0xE0), 128) == digits_of(BANK_B + BANK_A) * 2
+
+
+def test_agb_wave_ram_is_a_shift_register_the_cpu_sees_move():
+    apu = agb_wave(0xA0)  # 64 digits from bank 0: the CPU reaches bank 1
+    apu.tick(8 + 2)  # two digits played: one byte has left the front and gone to the back
+    assert apu.read(WAVE_RAM) == BANK_B[1]
+    assert apu.read(WAVE_RAM + 15) == BANK_A[0]
+    assert apu.capture_state().wave_ram == BANK_A[1:] + BANK_B + BANK_A[:1]
+    apu = agb_wave(0x80)  # one bank: stopping part way leaves it turned
+    apu.tick(8 + 2 * 3)  # four digits
+    apu.write(NR30, 0x40)
+    assert bytes(apu.read(WAVE_RAM + i) for i in range(16)) == BANK_A[2:] + BANK_A[:2]
+
+
+def test_agb_force_bit_is_75_percent_and_reads_back():
+    apu = agb_wave(0x80, nr32=0x80)
+    assert apu.wave_quarters() == 3
+    assert apu.read(NR32) == 0x9F
+    apu.tick(8 + 2 * 29)  # the 30th digit: the 15 of byte 0Fh
+    assert apu.wave_digit() == 15
+    assert apu.digital()[2] == 11  # 15 x 3/4, rounded down
+    assert [agb_wave(0x80, nr32=n << 5).wave_quarters() for n in range(4)] == [0, 4, 2, 1]
+    cgb = APU(model=CGB)
+    cgb.write(NR52, 0x80)
+    cgb.write(NR32, 0x80)
+    assert cgb.wave_quarters() == 0 and cgb.read(NR32) == 0x9F | 0x80
+
+
+def test_agb_nr30_reads_its_bank_bits():
+    apu = APU(model=AGB)
+    apu.write(NR52, 0x80)
+    apu.write(NR30, 0xE0)
+    assert apu.read(NR30) == 0xFF
+    apu.write(NR30, 0x00)
+    assert apu.read(NR30) == 0x1F
+
+
+def test_volumes_are_the_envelopes():
+    apu = APU(model=AGB)
+    apu.write(NR52, 0x80)
+    apu.write(NR12, 0xA0)
+    apu.write(NR14, 0x80)
+    assert apu.volumes() == (10, 0, 0)

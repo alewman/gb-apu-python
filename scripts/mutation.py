@@ -25,7 +25,7 @@ APU = ROOT / "src" / "gb_apu_python" / "__init__.py"
 MUTANTS = [
     ("duty 75% inverted", "        (0, 1, 1, 1, 1, 1, 1, 0))", "        (1, 0, 0, 0, 0, 0, 0, 1))"),
     ("noise divisors from 16", "NOISE_DIVISORS = (8, 16, 32, 48, 64, 80, 96, 112)", "NOISE_DIVISORS = (16, 16, 32, 48, 64, 80, 96, 112)"),
-    ("wave volume shifts off by one", "shift = (0, 0, 1, 2)", "shift = (0, 1, 2, 3)"),
+    ("wave volume shifts off by one", "WAVE_QUARTERS = (0, 4, 2, 1)", "WAVE_QUARTERS = (0, 2, 1, 0)"),
     ("wave nibbles swapped", "ch3.buffer = (byte >> 4) if not ch3.index & 1 else byte & 0xF", "ch3.buffer = (byte & 0xF) if not ch3.index & 1 else byte >> 4"),
     ("wave period at 1 MHz", "ch3.timer += (2048 - ch3.frequency) * 2", "ch3.timer += (2048 - ch3.frequency) * 4"),
     ("lengths clocked on the even steps", "        if divider & 1:\n", "        if not divider & 1:\n"),
@@ -42,6 +42,15 @@ MUTANTS = [
     ("narrower DMG wave corruption", "CORRUPT_LO, CORRUPT_HI = 1, 3", "CORRUPT_LO, CORRUPT_HI = 1, 2"),
     ("DAC polarity flipped", "analog = (7.5 - digital) / 7.5", "analog = (digital - 7.5) / 7.5"),
     ("panning sides swapped", "            if nr51 & (0x10 << i):\n", "            if nr51 & (0x01 << i):\n"),
+    ("AGB: the CPU reaches the playing bank", "return 0 if self.registers[0x0A] & 0x40 else 32", "return 32 if self.registers[0x0A] & 0x40 else 0"),
+    ("AGB: bank 0 always plays", "        start = 32 if nr30 & 0x40 else 0\n", "        start = 0\n"),
+    ("AGB: 64 digits never chain", "        if nr30 & 0x20:\n", "        if False:\n"),
+    ("AGB: the 64-digit ring drops a digit", "            digits[other + 31] = out\n", "            digits[other + 31] = digits[other]\n"),
+    ("AGB: a pointer, not a shift register", "            digits[start : start + 31] = digits[start + 1 : start + 32]\n            digits[start + 31] = out\n", "            digits[start + 31] = out\n"),
+    ("AGB: force bit ignored", "        if self.wave_banks and nr32 & 0x80:\n", "        if False:\n"),
+    ("AGB: force gives 50 %", "            return 3\n", "            return 2\n"),
+    ("AGB: NR30's bank bits unreadable", "READ_MASKS_AGB = (*READ_MASKS[:0x0A], 0x1F, 0xFF, 0x1F,", "READ_MASKS_AGB = (*READ_MASKS[:0x0A], 0x7F, 0xFF, 0x1F,"),
+    ("AGB: wave digits swapped on write", "            self.wave_digits[at] = value >> 4\n            self.wave_digits[at + 1] = value & 0xF\n", "            self.wave_digits[at + 1] = value >> 4\n            self.wave_digits[at] = value & 0xF\n"),
     ("PCM nibbles swapped", "return outputs[2 * pair] | (outputs[2 * pair + 1] << 4)", "return (outputs[2 * pair] << 4) | outputs[2 * pair + 1]"),
 ]  # fmt: skip
 

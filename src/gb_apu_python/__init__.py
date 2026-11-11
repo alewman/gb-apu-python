@@ -12,7 +12,8 @@ boundary that any host drives (docs/contract.md):
   volume) for a host that mixes them itself, or ``take_samples()`` (this core's labelled-fit mix);
   ``capture_state()`` is an immutable snapshot.
 
-A ``Model`` row holds a revision's differences: DMG and CGB here. The behaviour follows Pan Docs
+A ``Model`` row holds a revision's differences: DMG, CGB and AGB (the Game Boy Advance's four
+Game Boy channels, in its own mode; docs/contract.md "The AGB row"). The behaviour follows Pan Docs
 ``Audio_details.md``, blargg ``dmg_sound``/``cgb_sound`` and SameSuite's APU ROMs (SameBoy's model
 of the CGB); where a constant is fitted to a test it says so. Extracted from gameboy-python, which
 pins it.
@@ -33,14 +34,18 @@ class Model:
 
     name: str
     cgb: bool
+    #: AGB: wave RAM is two banks of 32 digits held in a shift register (NR30 bit 6 picks the
+    #: bank that plays, bit 5 chains both into 64 digits; the CPU reaches the bank that is not
+    #: selected), and NR32 bit 7 forces the wave volume to 75 % (GBATEK "GBA Sound Channel 3")
+    wave_banks: bool = False
 
 
 DMG = Model("dmg", cgb=False)  # DMG-CPU (the revisions gameboy-python runs)
 CGB = Model("cgb", cgb=True)  # CPU CGB E (gameboy-python's CGB)
-# AGB: the Game Boy Advance's Game Boy channels (two wave banks and the 64-sample mode, the forced
-# 75 % wave volume, the frame sequencer from the system clock). Not modelled yet: the row and its
-# rules come with gba-python's sound work.
-MODELS = {"dmg": DMG, "cgb": CGB}
+# The Game Boy Advance's Game Boy channels, in GBA mode (gba-python): the CGB-family rules plus
+# the wave channel's two banks. The host clocks the frame sequencer from its own system clock.
+AGB = Model("agb", cgb=True, wave_banks=True)
+MODELS = {"dmg": DMG, "cgb": CGB, "agb": AGB}
 
 #: register addresses (the Game Boy's; a host maps its own onto them)
 NR10, NR11, NR12, NR13, NR14 = 0xFF10, 0xFF11, 0xFF12, 0xFF13, 0xFF14
@@ -58,6 +63,11 @@ READ_MASKS = (
     0xFF, 0xFF, 0x00, 0x00, 0xBF,  # $FF1F (unused), NR41-NR44
     0x00, 0x00, 0x70,  # NR50, NR51, NR52
 )  # fmt: skip
+
+#: AGB: NR30's bank bits (6-5) and NR32's force bit (7) read back too
+READ_MASKS_AGB = (*READ_MASKS[:0x0A], 0x1F, 0xFF, 0x1F, *READ_MASKS[0x0D:])
+#: the wave channel's volume in quarters by NR32 bits 6-5; the AGB's force bit gives 3
+WAVE_QUARTERS = (0, 4, 2, 1)
 
 #: NRx4 address -> channel index (the trigger bit is bit 7)
 TRIGGERS = {0xFF14: 0, 0xFF19: 1, 0xFF1E: 2, 0xFF23: 3}
@@ -233,7 +243,7 @@ class APUState:
     t: int  # T-cycles since construction
     power: bool
     registers: bytes  # $FF10-$FF26 as written
-    wave_ram: bytes
+    wave_ram: bytes  # AGB: both banks (32 bytes) as the shift register holds them now
     divider: int  # frame sequencer steps counted (mod 256)
     enabled: tuple[bool, bool, bool, bool]
     lengths: tuple[int, int, int, int]
@@ -248,8 +258,13 @@ class APU:
     def __init__(self, sample_rate: int = 44100, model: Model = DMG) -> None:
         self.model = model
         self.cgb = model.cgb
+        self.wave_banks = model.wave_banks
+        self._read_masks = READ_MASKS_AGB if model.wave_banks else READ_MASKS
         self.registers = bytearray(0x17)  # $FF10-$FF26 as written
         self.wave_ram = bytearray(WAVE_POWER_ON)
+        # AGB: the shift register, one digit per entry: bank 0 then bank 1, each in play order.
+        # Playing rotates the selected bank (both, in 64-digit mode), so digits move.
+        self.wave_digits = bytearray(64)
         self.power = False
         self.ch1 = Pulse(True)
         self.ch2 = Pulse(False)
@@ -306,7 +321,7 @@ class APU:
             status = sum(1 << i for i, on in enumerate(self.channel_on) if on)
             return 0x70 | (0x80 if self.power else 0) | status
         index = address - 0xFF10
-        return self.registers[index] | READ_MASKS[index]
+        return self.registers[index] | self._read_masks[index]
 
     def write(self, address: int, value: int) -> None:
         if address >= 0xFF30:
@@ -785,7 +800,15 @@ class APU:
     def _wave_reachable(self) -> bool:
         return self.t - self.ch3.last_read < WAVE_WINDOW
 
+    def _other_bank(self) -> int:
+        """AGB: where the bank the CPU reaches starts in the shift register: the one NR30 bit 6
+        does not select, playing or not (GBATEK; with the APU off NR30 is 0, so bank 1)."""
+        return 0 if self.registers[0x0A] & 0x40 else 32
+
     def _read_wave(self, offset: int) -> int:
+        if self.wave_banks:
+            at = self._other_bank() + 2 * offset
+            return (self.wave_digits[at] << 4) | self.wave_digits[at + 1]
         ch3 = self.ch3
         if not (ch3.enabled and self.power):
             return self.wave_ram[offset]
@@ -794,6 +817,11 @@ class APU:
         return 0xFF
 
     def _write_wave(self, offset: int, value: int) -> None:
+        if self.wave_banks:
+            at = self._other_bank() + 2 * offset
+            self.wave_digits[at] = value >> 4
+            self.wave_digits[at + 1] = value & 0xF
+            return
         ch3 = self.ch3
         if not (ch3.enabled and self.power):
             self.wave_ram[offset] = value
@@ -897,6 +925,12 @@ class APU:
         if not ch3.enabled:
             return
         ch3.timer -= t
+        if self.wave_banks:
+            period = (2048 - ch3.frequency) * 2
+            while ch3.timer <= 0:
+                ch3.timer += period
+                self._shift_wave()
+            return
         while ch3.timer <= 0:
             at = base + t + ch3.timer  # when inside this tick the period ran out
             ch3.timer += (2048 - ch3.frequency) * 2
@@ -904,6 +938,25 @@ class APU:
             byte = self.wave_ram[ch3.index >> 1]
             ch3.buffer = (byte >> 4) if not ch3.index & 1 else byte & 0xF
             ch3.last_read = at
+
+    def _shift_wave(self) -> None:
+        """AGB: the shift register moves one digit and the digit that leaves its end is played
+        (and re-enters at the other end). One bank is a ring of 32; in 64-digit mode both are
+        one ring that starts with the selected bank (GBATEK)."""
+        digits = self.wave_digits
+        nr30 = self.registers[0x0A]
+        start = 32 if nr30 & 0x40 else 0
+        out = digits[start]
+        if nr30 & 0x20:
+            other = start ^ 32
+            digits[start : start + 31] = digits[start + 1 : start + 32]
+            digits[start + 31] = digits[other]
+            digits[other : other + 31] = digits[other + 1 : other + 32]
+            digits[other + 31] = out
+        else:
+            digits[start : start + 31] = digits[start + 1 : start + 32]
+            digits[start + 31] = out
+        self.ch3.buffer = out
 
     def _tick_noise(self, t: int) -> None:
         ch4 = self.ch4
@@ -925,8 +978,25 @@ class APU:
         ch3 = self.ch3
         if not ch3.enabled:
             return 0
-        shift = (0, 0, 1, 2)[(self.registers[0x0C] >> 5) & 3]
-        return 0 if (self.registers[0x0C] >> 5) & 3 == 0 else ch3.buffer >> shift
+        return (ch3.buffer * self.wave_quarters()) >> 2
+
+    def wave_quarters(self) -> int:
+        """The wave channel's volume in quarters (NR32): 0, 4 (100 %), 2 or 1; on the AGB bit 7
+        forces 3 (75 %)."""
+        nr32 = self.registers[0x0C]
+        if self.wave_banks and nr32 & 0x80:
+            return 3
+        return WAVE_QUARTERS[(nr32 >> 5) & 3]
+
+    def wave_digit(self) -> int:
+        """The wave channel's current digit (0-15) before its volume; 0 while it is off. With
+        ``wave_quarters()``, what a host needs to mix the AGB's 75 % exactly."""
+        return self.ch3.buffer if self.ch3.enabled else 0
+
+    def volumes(self) -> tuple[int, int, int]:
+        """The envelope volumes (0-15) of channels 1, 2 and 4: a host that mixes around zero (the
+        AGB's digital mixer) needs them beside ``digital()``."""
+        return (self.ch1.env.volume, self.ch2.env.volume, self.ch4.env.volume)
 
     def audible(self) -> bool:
         """Whether any channel routed to an output (NR51) is producing a non-zero digital value
@@ -961,13 +1031,19 @@ class APU:
             t=self.t,
             power=self.power,
             registers=bytes(self.registers),
-            wave_ram=bytes(self.wave_ram),
+            wave_ram=self._wave_bytes(),
             divider=self.divider,
             enabled=(self.ch1.enabled, self.ch2.enabled, self.ch3.enabled, self.ch4.enabled),
             lengths=(self.ch1.length, self.ch2.length, self.ch3.length, self.ch4.length),
             volumes=(self.ch1.env.volume, self.ch2.env.volume, self.ch4.env.volume),
             digital=self.digital(),
         )
+
+    def _wave_bytes(self) -> bytes:
+        if not self.wave_banks:
+            return bytes(self.wave_ram)
+        digits = self.wave_digits
+        return bytes((digits[i] << 4) | digits[i + 1] for i in range(0, 64, 2))
 
     def _mix(self) -> tuple[float, float]:
         """Analogue left and right, -1..1 before the volume: DAC maps digital 0 to +1 and 15 to
@@ -1041,6 +1117,7 @@ class APU:
 
 
 __all__ = [
+    "AGB",
     "APU",
     "CGB",
     "DMG",
