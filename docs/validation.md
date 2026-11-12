@@ -11,7 +11,13 @@ The hardware judges are test ROMs, run on gameboy-python (the APU needs a CPU to
 | SameSuite `apu/` (sample-accurate through PCM12/PCM34) | CGB E | the 63 that apply to a CGB E (of 70) | `scripts/cgb_suites.py same-suite` |
 | Gambatte `_outaudio` ROMs | DMG | as gameboy-python lists them | `scripts/gambatte_audio.py` |
 
+The blargg rows were rerun on 2026-11-12 with this repository at b8cab61 in place of the board's
+pin (gameboy-python 36e14e1, PyPy): 24 of 24. SameSuite was last measured on the board itself.
+
 ## What this repository checks on its own
+
+CI (PyPy) runs the board streams, the seam tests and ruff on every push to `main` and every pull
+request; nothing in it needs a ROM.
 
 - **Board streams** (`tests/test_board_streams.py`): `scripts/export_board_streams.py` records every
   call gameboy-python's board makes into the APU while it runs the 94 judge ROMs above (dmg_sound and
@@ -30,7 +36,7 @@ The hardware judges are test ROMs, run on gameboy-python (the APU needs a CPU to
   NR52, length widths, the DMG/CGB power-off rules, the spent first step, wave start-up and
   corruption timing, DAC polarity, panning, PCM nibbles; for the AGB the bank the CPU reaches, the
   bank that plays, the 64-digit ring, the shift register, the force bit, the readable bits; the odd T `run` holds); each must fail
-  the tests. 30 of 30 are caught (2026-11-11). The 7-bit noise width is heard by no judge ROM, so it has its own rule test
+  the tests. 30 of 30 are caught (2026-11-11; rerun at b8cab61 on 2026-11-12, PyPy, same). The 7-bit noise width is heard by no judge ROM, so it has its own rule test
   (`test_noise_lfsr_periods`): without it that mutant went unseen.
 
 ## The extraction

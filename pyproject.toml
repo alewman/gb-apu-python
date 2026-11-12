@@ -25,6 +25,11 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/alewman/gb-apu-python"
+Repository = "https://github.com/alewman/gb-apu-python"
+Issues = "https://github.com/alewman/gb-apu-python/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8",

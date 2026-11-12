@@ -13,10 +13,12 @@ dist/
 .coverage
 htmlcov/
 
-# Fetched referee sources and their local builds (scripts/fetch_references.py,
-# validation/build_referees.sh). Third-party, (L)GPL: never commit them.
+# Third-party sources, test ROMs and referee builds, if a checkout keeps any here: never
+# commit them. (The judge ROMs live in the board's checkout; tests/streams/ holds only the
+# APU register traffic recorded from them, and is committed.)
 reference/
-
-# Register streams exported from a board (scripts/export_board_streams.py). Derived
-# from ROMs: local only, never committed.
-validation/streams/
+roms/
+*.gb
+*.gbc
+*.gba
+*.zip
